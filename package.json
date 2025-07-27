@@ -26,12 +26,14 @@
   },
   "manifest": {
     "host_permissions": [
-      "https://*/*"
+      "https://*/*",
+      "http://*/*"
     ],
     "permissions": [
       "activeTab",
       "scripting",
-      "downloads"
+      "downloads",
+      "tabs"
     ]
   }
 }

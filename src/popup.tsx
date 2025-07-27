@@ -1,35 +1,41 @@
-// popup.tsx
-import React from "react"
+import React from "react";
 
 const Popup = () => {
   const startCapture = async () => {
-    console.log("Start capture")
+    console.log("Start capture");
 
     if (!chrome?.scripting) {
-      console.error("chrome.scripting API not available")
-      alert("Extension permissions not properly set up")
-      return
+      console.error("chrome.scripting API not available");
+      alert("Extension permissions not properly set up");
+      return;
     }
 
     try {
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
 
       if (!tab.id) {
-        console.error("No active tab found")
-        return
+        console.error("No active tab found");
+        return;
       }
 
-      // Inject the content script if it's not already there
+      console.log("Enabling selection mode on tab:", tab.id);
+
+      // Enable selection mode and add indicator
       await chrome.scripting.executeScript({
         target: { tabId: tab.id },
         func: () => {
-          // Enable selection mode
+          console.log("Enabling selection mode");
           (window as any).selectionMode = true;
-          console.log("Selection mode enabled")
+
+          // Remove any existing indicator
+          const existingIndicator = document.getElementById('quickcapture-indicator');
+          if (existingIndicator) {
+            existingIndicator.remove();
+          }
 
           // Add visual indicator that selection mode is active
-          const indicator = document.createElement('div')
-          indicator.id = 'quickcapture-indicator'
+          const indicator = document.createElement('div');
+          indicator.id = 'quickcapture-indicator';
           indicator.style.cssText = `
             position: fixed;
             top: 10px;
@@ -44,31 +50,22 @@ const Popup = () => {
             z-index: 10000;
             box-shadow: 0 2px 8px rgba(0,0,0,0.15);
             pointer-events: none;
-          `
-          indicator.textContent = '🖱️ Click on any element to capture it'
-          document.body.appendChild(indicator)
+          `;
+          indicator.textContent = '🖱️ Click on any element to capture it';
+          document.body.appendChild(indicator);
 
-          // Remove indicator when selection mode is disabled
-          const checkMode = () => {
-            if (!(window as any).selectionMode) {
-              const existingIndicator = document.getElementById('quickcapture-indicator')
-              if (existingIndicator) {
-                existingIndicator.remove()
-              }
-            } else {
-              setTimeout(checkMode, 100)
-            }
-          }
-          setTimeout(checkMode, 100)
+          console.log("Selection mode enabled, indicator added");
         }
-      })
+      });
 
+      console.log("Selection mode enabled successfully");
       // Close popup
-      window.close()
+      window.close();
     } catch (error) {
-      console.error("Error executing script:", error)
+      console.error("Error executing script:", error);
+      alert(`Error: ${error.message}`);
     }
-  }
+  };
 
   return (
     <div
@@ -117,10 +114,10 @@ const Popup = () => {
           boxShadow: "0 1px 3px rgba(0,0,0,0.1)"
         }}
         onMouseOver={(e) => {
-          e.currentTarget.style.backgroundColor = "#1d4ed8"
+          e.currentTarget.style.backgroundColor = "#1d4ed8";
         }}
         onMouseOut={(e) => {
-          e.currentTarget.style.backgroundColor = "#2563eb"
+          e.currentTarget.style.backgroundColor = "#2563eb";
         }}
       >
         Start Capturing
@@ -135,7 +132,7 @@ const Popup = () => {
         Click the button, then hover and click on any element to capture it as an image
       </div>
     </div>
-  )
-}
+  );
+};
 
-export default Popup
+export default Popup;

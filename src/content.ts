@@ -1,57 +1,87 @@
-// content.ts
 import html2canvas from "html2canvas"
 
 let currentElement: HTMLElement | null = null
 
-document.addEventListener("mouseover", (e) => {
-  if (!(window as any).selectionMode) return
+// Make sure the content script only runs once
+if (!(window as any).quickCaptureLoaded) {
+  ;(window as any).quickCaptureLoaded = true
 
-  const el = e.target as HTMLElement
-  console.log("Hovered over:", el)
+  console.log("QuickCapture content script loaded")
 
-  if (currentElement && currentElement !== el) {
+  document.addEventListener("mouseover", (e) => {
+    if (!(window as any).selectionMode) return
+
+    const el = e.target as HTMLElement
+    console.log("Hovered over:", el)
+
+    if (currentElement && currentElement !== el) {
+      currentElement.style.outline = ""
+      console.log("Removed outline from previous element")
+    }
+
+    currentElement = el
+    currentElement.style.outline = "2px solid red"
+    console.log("Added outline to current element")
+  })
+
+  document.addEventListener("mouseout", (e) => {
+    if (!(window as any).selectionMode) return
+
+    const el = e.target as HTMLElement
+    el.style.outline = ""
+    console.log("Mouse out from:", el)
+  })
+
+  document.addEventListener("click", async (e) => {
+    if (!(window as any).selectionMode || !currentElement) return
+
+    e.preventDefault()
+    e.stopPropagation()
+
+    console.log("Clicked element:", currentElement)
+
+    // Show loading indicator
+    showNotification("Capturing element...", "info")
+
+    try {
+      // Try multiple capture methods
+      await captureElementMultiMethod(currentElement)
+    } catch (error) {
+      console.error("All capture methods failed:", error)
+      showNotification("Failed to capture element", "error")
+    }
+
     currentElement.style.outline = ""
-    console.log("Removed outline from previous element")
-  }
+    currentElement = null
+    ;(window as any).selectionMode = false
 
-  currentElement = el
-  currentElement.style.outline = "2px solid red"
-  console.log("Added outline to current element")
-})
+    // Remove the indicator
+    const indicator = document.getElementById("quickcapture-indicator")
+    if (indicator) {
+      indicator.remove()
+    }
 
-document.addEventListener("mouseout", (e) => {
-  if (!(window as any).selectionMode) return
+    console.log("Selection mode disabled")
+  })
 
-  const el = e.target as HTMLElement
-  el.style.outline = ""
-  console.log("Mouse out from:", el)
-})
+  // Add message listener for Chrome API screenshots
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    console.log("Content script received message:", message.type)
 
-document.addEventListener("click", async (e) => {
-  if (!(window as any).selectionMode || !currentElement) return
-
-  e.preventDefault()
-  e.stopPropagation()
-
-  console.log("Clicked element:", currentElement)
-
-  // Show loading indicator
-  showNotification("Capturing element...", "info")
-
-  try {
-    // Try multiple capture methods
-    await captureElementMultiMethod(currentElement)
-  } catch (error) {
-    console.error("All capture methods failed:", error)
-    showNotification("Failed to capture element", "error")
-  }
-
-  currentElement.style.outline = ""
-  currentElement = null
-  ;(window as any).selectionMode = false
-
-  console.log("Selection mode disabled")
-})
+    if (message.type === "process-chrome-screenshot") {
+      processChromeScreenshot(message.screenshot, message.rect, message.zoom)
+        .then(() => {
+          console.log("Chrome screenshot processed successfully")
+          sendResponse({ success: true })
+        })
+        .catch((error) => {
+          console.error("Chrome screenshot processing failed:", error)
+          sendResponse({ success: false, error: error.message })
+        })
+      return true // Keep message channel open
+    }
+  })
+}
 
 async function captureElementMultiMethod(element: HTMLElement) {
   console.log(
@@ -98,40 +128,51 @@ async function captureWithHtml2CanvasOptimized(element: HTMLElement) {
   // Wait for any animations/transitions to complete
   await new Promise((resolve) => setTimeout(resolve, 100))
 
+  // Get the actual background color that's being rendered
+  const actualBackgroundColor = getActualBackgroundColor(element)
+  console.log("Detected actual background color:", actualBackgroundColor)
+
   const options = {
-    backgroundColor: null,
-    scale: 1, // Lower scale to avoid memory issues
+    backgroundColor: actualBackgroundColor,
+    scale: 1,
     useCORS: true,
     allowTaint: true,
     logging: true,
     removeContainer: true,
     imageTimeout: 30000,
-    // Capture the element with some padding
     x: 0,
     y: 0,
     width: element.offsetWidth,
     height: element.offsetHeight,
     onclone: (clonedDoc: Document, clonedElement: HTMLElement) => {
       console.log("Preparing cloned element for capture")
-
-      // Ensure element is visible
+      applyInheritedBackgrounds(element, clonedElement)
       clonedElement.style.position = "static"
       clonedElement.style.visibility = "visible"
       clonedElement.style.opacity = "1"
       clonedElement.style.display = "block"
 
-      // Fix any potential styling issues
-      const computedStyle = window.getComputedStyle(element)
-      clonedElement.style.backgroundColor =
-        computedStyle.backgroundColor || "#ffffff"
-      clonedElement.style.color = computedStyle.color || "#000000"
-
-      // Force render all child elements
       const allChildren = clonedElement.querySelectorAll("*")
       allChildren.forEach((child: Element) => {
         const childEl = child as HTMLElement
         childEl.style.visibility = "visible"
         childEl.style.opacity = "1"
+
+        const originalChild = findCorrespondingElement(
+          element,
+          clonedElement,
+          child
+        )
+        if (originalChild) {
+          const childBg = getActualBackgroundColor(originalChild as HTMLElement)
+          if (
+            childBg &&
+            childBg !== "rgba(0, 0, 0, 0)" &&
+            childBg !== "transparent"
+          ) {
+            childEl.style.backgroundColor = childBg
+          }
+        }
       })
     }
   }
@@ -153,18 +194,33 @@ async function captureWithHtml2CanvasOptimized(element: HTMLElement) {
 }
 
 async function captureWithHtml2CanvasFallback(element: HTMLElement) {
-  // Very simple options
+  const actualBackground = getActualBackgroundColor(element)
+
   const options = {
-    backgroundColor: "#ffffff",
+    backgroundColor: actualBackground,
     scale: 1,
     logging: true,
     useCORS: false,
     allowTaint: false,
-    width: Math.min(element.offsetWidth, 2000), // Limit size
-    height: Math.min(element.offsetHeight, 2000)
+    width: Math.min(element.offsetWidth, 2000),
+    height: Math.min(element.offsetHeight, 2000),
+    onclone: (clonedDoc: Document, clonedElement: HTMLElement) => {
+      clonedElement.style.backgroundColor = actualBackground
+      const allElements = clonedElement.querySelectorAll("*")
+      allElements.forEach((el: Element) => {
+        const htmlEl = el as HTMLElement
+        const elStyle = window.getComputedStyle(htmlEl)
+        if (
+          !elStyle.backgroundColor ||
+          elStyle.backgroundColor === "rgba(0, 0, 0, 0)"
+        ) {
+          htmlEl.style.backgroundColor = "inherit"
+        }
+      })
+    }
   }
 
-  console.log("Trying fallback html2canvas")
+  console.log("Trying fallback html2canvas with background:", actualBackground)
   const canvas = await html2canvas(element, options)
 
   if (isCanvasBlank(canvas)) {
@@ -175,14 +231,12 @@ async function captureWithHtml2CanvasFallback(element: HTMLElement) {
 }
 
 async function captureWithChromeAPI(element: HTMLElement) {
-  // Get element position relative to viewport
   const rect = element.getBoundingClientRect()
   const scrollX = window.pageXOffset
   const scrollY = window.pageYOffset
 
   console.log("Element rect:", rect)
 
-  // Request screenshot from background script
   return new Promise<void>((resolve, reject) => {
     chrome.runtime.sendMessage(
       {
@@ -195,103 +249,29 @@ async function captureWithChromeAPI(element: HTMLElement) {
         }
       },
       (response) => {
+        console.log("Chrome API response:", response)
         if (response && response.success) {
           showNotification("Element captured with Chrome API!", "success")
           resolve()
         } else {
-          reject(new Error("Chrome API capture failed"))
+          reject(
+            new Error(
+              `Chrome API capture failed: ${response?.error || "Unknown error"}`
+            )
+          )
         }
       }
     )
   })
 }
 
-function isCanvasBlank(canvas: HTMLCanvasElement): boolean {
-  const ctx = canvas.getContext("2d")
-  if (!ctx) return true
-
-  const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
-  const data = imageData.data
-
-  // Check if all pixels are transparent or white
-  for (let i = 0; i < data.length; i += 4) {
-    const r = data[i]
-    const g = data[i + 1]
-    const b = data[i + 2]
-    const a = data[i + 3]
-
-    // If we find any non-white, non-transparent pixel, canvas is not blank
-    if (a > 0 && (r !== 255 || g !== 255 || b !== 255)) {
-      return false
-    }
-  }
-
-  console.log("Canvas appears to be blank")
-  return true
-}
-
-async function downloadCanvas(canvas: HTMLCanvasElement, method: string) {
-  canvas.toBlob((blob) => {
-    if (blob) {
-      const dataUrl = canvas.toDataURL("image/png", 1.0)
-
-      chrome.runtime.sendMessage({
-        type: "download-image",
-        dataUrl: dataUrl,
-        filename: `element-${method}-${Date.now()}.png`
-      })
-
-      showNotification(
-        `Element captured successfully with ${method}!`,
-        "success"
-      )
-      console.log(
-        `Successfully captured with ${method}: ${canvas.width}x${canvas.height}`
-      )
-    } else {
-      throw new Error(`Failed to create blob from ${method} canvas`)
-    }
-  }, "image/png")
-}
-
-// Add debugging function to inspect element
-function debugElement(element: HTMLElement) {
-  const computedStyle = window.getComputedStyle(element)
-  console.log("Element debug info:", {
-    tagName: element.tagName,
-    className: element.className,
-    id: element.id,
-    offsetWidth: element.offsetWidth,
-    offsetHeight: element.offsetHeight,
-    scrollWidth: element.scrollWidth,
-    scrollHeight: element.scrollHeight,
-    backgroundColor: computedStyle.backgroundColor,
-    color: computedStyle.color,
-    display: computedStyle.display,
-    visibility: computedStyle.visibility,
-    opacity: computedStyle.opacity,
-    position: computedStyle.position
-  })
-}
-
-// Add message listener for Chrome API screenshots
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.type === "process-chrome-screenshot") {
-    processChromeScreenshot(message.screenshot, message.rect, message.zoom)
-      .then(() => sendResponse({ success: true }))
-      .catch((error) => {
-        console.error("Chrome screenshot processing failed:", error)
-        sendResponse({ success: false })
-      })
-    return true // Keep message channel open
-  }
-})
-
 async function processChromeScreenshot(
   screenshot: string,
   rect: any,
   zoom: number
 ) {
+  console.log("Processing Chrome screenshot, rect:", rect, "zoom:", zoom)
+
   const canvas = document.createElement("canvas")
   const ctx = canvas.getContext("2d")
 
@@ -303,6 +283,8 @@ async function processChromeScreenshot(
     const img = new Image()
 
     img.onload = () => {
+      console.log("Screenshot image loaded:", img.width, "x", img.height)
+
       // Calculate scaled coordinates
       const scale = zoom * window.devicePixelRatio
       const x = rect.x * scale
@@ -310,36 +292,41 @@ async function processChromeScreenshot(
       const width = rect.width * scale
       const height = rect.height * scale
 
+      console.log("Cropping coordinates:", { x, y, width, height, scale })
+
       // Set canvas size
       canvas.width = width
       canvas.height = height
 
       // Draw cropped portion
-      ctx.drawImage(
-        img,
-        x,
-        y,
-        width,
-        height, // Source rectangle
-        0,
-        0,
-        width,
-        height // Destination rectangle
-      )
+      ctx.drawImage(img, x, y, width, height, 0, 0, width, height)
 
       // Download the result
       canvas.toBlob((blob) => {
         if (blob) {
           const dataUrl = canvas.toDataURL("image/png", 1.0)
+          console.log("Sending download request for Chrome API capture")
 
-          chrome.runtime.sendMessage({
-            type: "download-image",
-            dataUrl: dataUrl,
-            filename: `element-chrome-api-${Date.now()}.png`
-          })
-
-          showNotification("Element captured with Chrome API!", "success")
-          resolve()
+          chrome.runtime.sendMessage(
+            {
+              type: "download-image",
+              dataUrl: dataUrl,
+              filename: `element-chrome-api-${Date.now()}.png`
+            },
+            (response) => {
+              console.log("Download response:", response)
+              if (response && response.success) {
+                showNotification("Element captured with Chrome API!", "success")
+                resolve()
+              } else {
+                reject(
+                  new Error(
+                    `Download failed: ${response?.error || "Unknown error"}`
+                  )
+                )
+              }
+            }
+          )
         } else {
           reject(new Error("Failed to create blob from Chrome API canvas"))
         }
@@ -352,7 +339,169 @@ async function processChromeScreenshot(
   })
 }
 
-// Utility function to show notifications
+async function downloadCanvas(canvas: HTMLCanvasElement, method: string) {
+  return new Promise<void>((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob) {
+        const dataUrl = canvas.toDataURL("image/png", 1.0)
+        console.log("Sending download request for", method)
+
+        chrome.runtime.sendMessage(
+          {
+            type: "download-image",
+            dataUrl: dataUrl,
+            filename: `element-${method}-${Date.now()}.png`
+          },
+          (response) => {
+            console.log("Download response:", response)
+            if (response && response.success) {
+              showNotification(
+                `Element captured successfully with ${method}!`,
+                "success"
+              )
+              console.log(
+                `Successfully captured with ${method}: ${canvas.width}x${canvas.height}`
+              )
+              resolve()
+            } else {
+              reject(
+                new Error(
+                  `Download failed: ${response?.error || "Unknown error"}`
+                )
+              )
+            }
+          }
+        )
+      } else {
+        reject(new Error(`Failed to create blob from ${method} canvas`))
+      }
+    }, "image/png")
+  })
+}
+
+function isCanvasBlank(canvas: HTMLCanvasElement): boolean {
+  const ctx = canvas.getContext("2d")
+  if (!ctx) return true
+
+  const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
+  const data = imageData.data
+
+  for (let i = 0; i < data.length; i += 4) {
+    const r = data[i]
+    const g = data[i + 1]
+    const b = data[i + 2]
+    const a = data[i + 3]
+
+    if (a > 0 && (r !== 255 || g !== 255 || b !== 255)) {
+      return false
+    }
+  }
+
+  console.log("Canvas appears to be blank")
+  return true
+}
+
+function getActualBackgroundColor(element: HTMLElement): string {
+  const computedStyle = window.getComputedStyle(element)
+  let backgroundColor = computedStyle.backgroundColor
+
+  console.log(`Element ${element.tagName} background:`, backgroundColor)
+
+  if (
+    !backgroundColor ||
+    backgroundColor === "rgba(0, 0, 0, 0)" ||
+    backgroundColor === "transparent"
+  ) {
+    let parent = element.parentElement
+
+    while (parent && parent !== document.body) {
+      const parentStyle = window.getComputedStyle(parent)
+      const parentBg = parentStyle.backgroundColor
+
+      console.log(`Parent ${parent.tagName} background:`, parentBg)
+
+      if (
+        parentBg &&
+        parentBg !== "rgba(0, 0, 0, 0)" &&
+        parentBg !== "transparent"
+      ) {
+        backgroundColor = parentBg
+        break
+      }
+      parent = parent.parentElement
+    }
+
+    if (
+      !backgroundColor ||
+      backgroundColor === "rgba(0, 0, 0, 0)" ||
+      backgroundColor === "transparent"
+    ) {
+      const bodyStyle = window.getComputedStyle(document.body)
+      const htmlStyle = window.getComputedStyle(document.documentElement)
+
+      backgroundColor =
+        bodyStyle.backgroundColor !== "rgba(0, 0, 0, 0)"
+          ? bodyStyle.backgroundColor
+          : htmlStyle.backgroundColor !== "rgba(0, 0, 0, 0)"
+            ? htmlStyle.backgroundColor
+            : "#ffffff"
+    }
+  }
+
+  console.log("Final background color:", backgroundColor)
+  return backgroundColor || "#ffffff"
+}
+
+function applyInheritedBackgrounds(
+  originalElement: HTMLElement,
+  clonedElement: HTMLElement
+) {
+  const actualBg = getActualBackgroundColor(originalElement)
+  clonedElement.style.backgroundColor = actualBg
+
+  const originalStyle = window.getComputedStyle(originalElement)
+
+  if (
+    originalStyle.backgroundImage &&
+    originalStyle.backgroundImage !== "none"
+  ) {
+    clonedElement.style.backgroundImage = originalStyle.backgroundImage
+  }
+
+  if (originalStyle.backgroundSize) {
+    clonedElement.style.backgroundSize = originalStyle.backgroundSize
+  }
+
+  if (originalStyle.backgroundRepeat) {
+    clonedElement.style.backgroundRepeat = originalStyle.backgroundRepeat
+  }
+
+  if (originalStyle.backgroundPosition) {
+    clonedElement.style.backgroundPosition = originalStyle.backgroundPosition
+  }
+
+  console.log("Applied backgrounds to cloned element")
+}
+
+function findCorrespondingElement(
+  originalParent: HTMLElement,
+  clonedElement: HTMLElement,
+  clonedChild: Element
+): Element | null {
+  try {
+    const originalChildren = Array.from(originalParent.querySelectorAll("*"))
+    const clonedChildren = Array.from(clonedElement.querySelectorAll("*"))
+
+    const clonedIndex = clonedChildren.indexOf(clonedChild)
+    if (clonedIndex >= 0 && clonedIndex < originalChildren.length) {
+      return originalChildren[clonedIndex]
+    }
+  } catch (error) {
+    console.log("Could not find corresponding element:", error)
+  }
+  return null
+}
+
 function showNotification(
   message: string,
   type: "success" | "error" | "info" = "success"
