@@ -10,6 +10,7 @@
     "package": "plasmo package"
   },
   "dependencies": {
+    "html2canvas": "^1.4.1",
     "plasmo": "0.90.5",
     "react": "18.2.0",
     "react-dom": "18.2.0"
@@ -26,6 +27,11 @@
   "manifest": {
     "host_permissions": [
       "https://*/*"
+    ],
+    "permissions": [
+      "activeTab",
+      "scripting",
+      "downloads"
     ]
   }
 }
